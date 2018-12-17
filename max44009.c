@@ -70,7 +70,7 @@ static const char max44009_int_time_str[] =
 	"0.0125 "
 	"0.00625";
 
-static const int max44009_scale_avail_ulux_array[] = { MAX_LUX_SCALE };
+static const int max44009_scale_avail_ulux_array[] = { MAX44009_LUX_SCALE };
 static const char max44009_scale_avail_str[] = "0.045";
 
 struct max44009_data {
@@ -105,39 +105,12 @@ static int max44009_read_reg(struct max44009_data *data, char reg, char *buf)
 		return ret;
 	}
 
-	ret = i2c_master_recv(client, buf, 1)
+	ret = i2c_master_recv(client, buf, 1);
 	if (ret) {
 		dev_err(&client->dev, "failed to read reg 0x%0x, err: %d\n", reg,
 			ret);
 	}
 	return ret;
-}
-
-static int max44009_read_hi_thr(struct max44009_data *data)
-{
-	char buf = 0;
-	unsigned int exp; 
-	unsigned int mantissa;
-
-	int ret = max44009_read_reg(data, MAX44009_REG_UPPER_THR, &buf); 
-	if (ret < 0)
-		return ret;
-
-	exp = EXP(buf);
-	mantissa = MANTISSA(buf);
-
-	return (1 << exp) * mantissa;
-}
-
-static int max44009_write_hi_thr(struct max44009_data *data, int val)
-{
-#if 0
-	return regmap_write_bits(data->regmap, MAX44009_REG_CFG_RX,
-				 MAX44009_CFG_RX_ALSTIM_MASK,
-				 val << MAX44009_CFG_RX_ALSTIM_SHIFT);
-#else
-	return 0;
-#endif
 }
 
 static int max44009_read_cfg(struct max44009_data *data, char *buf)
@@ -154,90 +127,12 @@ static int max44009_read_int_time(struct max44009_data *data)
 
 	return max44009_int_time_ns_array[buf & 0x7];
 }
-
-static int max44009_read_lo_thr(struct max44009_data *data)
-{
-	unsigned int exp;
-	unsigned int mantissa;
-	char buf = 0;
-
-	int ret = max44009_read_reg(data, MAX44009_LO_THR, &buf);
-	if (ret < 0)
-		return ret;
-
-	exp = EXP(buf);
-	mantissa = MANTISSA(buf);
-
-	return (1 << exp) * mantissa;
-}
-
-static int max44009_write_lo_thr(struct max44009_data *data, int val)
-{
-#if 0
-	return regmap_write_bits(data->regmap, MAX44009_REG_CFG_RX,
-				 MAX44009_CFG_RX_ALSPGA_MASK,
-				 val << MAX44009_CFG_RX_ALSPGA_SHIFT);
-#else
-	return 0;
-#endif
-}
-
-static int max44009_read_raw(struct iio_dev *indio_dev,
-			     struct iio_chan_spec const *chan,
-			     int *val, int *val2, long mask)
-{
-	struct max44009_data *data = iio_priv(indio_dev);
-	char regval = 0;
-	int ret;
-
-	switch (mask) {
-	case IIO_CHAN_INFO_RAW:
-		switch (chan->type) {
-		case IIO_LIGHT:
-			mutex_lock(&data->lock);
-			ret = max44009_read_lux(data->client, val);
-			mutex_unlock(&data->lock);
-			if (ret)
-				return ret;
-			return IIO_VAL_INT;
-		default:
-			return -EINVAL;
-		}
-
-	case IIO_CHAN_INFO_SCALE:
-		switch (chan->type) {
-		case IIO_LIGHT:
-			*val = 45;
-			*val2 = 1000;
-			return IIO_VAL_FRACTIONAL;
-		default:
-			return -EINVAL;
-		}
-
-	case IIO_CHAN_INFO_INT_TIME: {
-		mutex_lock(&data->lock);
-		ret = max44009_read_int_time(data, val2);
-		mutex_unlock(&data->lock);
-		if (ret)
-			return ret;
-
-		*val = 0;
-		return IIO_VAL_INT_PLUS_NANO;
-	}
-
-	default:
-		return -EINVAL;
-	}
-}
-
 static int max44009_write_raw(struct iio_dev *indio_dev,
 			      struct iio_chan_spec const *chan,
 			      int val, int val2, long mask)
 {
-	struct max44009_data *data = iio_priv(indio_dev);
-	int ret;
-
 #if 0
+	struct max44009_data *data = iio_priv(indio_dev);
 	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT) {
 		s64 valns = val * NSEC_PER_SEC + val2;
 		int alstim = find_closest_descending(valns,
@@ -274,6 +169,91 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 		return IIO_VAL_INT_PLUS_MICRO;
 	else
 		return IIO_VAL_INT;
+}
+
+static int max44009_read_lux(struct i2c_client *client,
+			     int *lux)
+{
+	int ret;
+	struct i2c_msg xfer[4];
+	u8 luxhireg[1] = { MAX44009_REG_LUX_HI };
+	u8 luxloreg[1] = { MAX44009_REG_LUX_LO };
+	u8 lo = 0;
+	u8 hi = 0;
+	
+	xfer[0].addr = client->addr;
+	xfer[0].flags = 0;
+	xfer[0].len = 1;
+	xfer[0].buf = luxhireg;
+
+	xfer[1].addr = client->addr;
+	xfer[1].flags = I2C_M_RD;
+	xfer[1].len = 1;
+	xfer[1].buf = &hi;
+	
+	xfer[2].addr = client->addr;
+	xfer[2].flags = 0;
+	xfer[2].len = 1;
+	xfer[2].buf = luxloreg;
+
+	xfer[3].addr = client->addr;
+	xfer[3].flags = I2C_M_RD;
+	xfer[3].len = 1;
+	xfer[3].buf = &lo;
+
+	ret = i2c_transfer(client->adapter, xfer, 4);
+	if (!ret)
+		*lux = MAX44009_LUX(hi, lo);
+
+	return ret;
+}
+
+static int max44009_read_raw(struct iio_dev *indio_dev,
+			     struct iio_chan_spec const *chan,
+			     int *val, int *val2, long mask)
+{
+	struct max44009_data *data = iio_priv(indio_dev);
+	int ret;
+
+	switch (mask) {
+	case IIO_CHAN_INFO_RAW:
+		switch (chan->type) {
+		case IIO_LIGHT:
+			mutex_lock(&data->lock);
+			ret = max44009_read_lux(data->client, val);
+			mutex_unlock(&data->lock);
+			if (ret)
+				return ret;
+			return IIO_VAL_INT;
+		default:
+			return -EINVAL;
+		}
+
+	case IIO_CHAN_INFO_SCALE:
+		switch (chan->type) {
+		case IIO_LIGHT:
+			*val = 45;
+			*val2 = 1000;
+			return IIO_VAL_FRACTIONAL;
+		default:
+			return -EINVAL;
+		}
+
+	case IIO_CHAN_INFO_INT_TIME: {
+		mutex_lock(&data->lock);
+		ret = max44009_read_int_time(data);
+		mutex_unlock(&data->lock);
+		if (ret < 0)
+			return ret;
+
+		*val2 = ret;
+		*val = 0;
+		return IIO_VAL_INT_PLUS_NANO;
+	}
+
+	default:
+		return -EINVAL;
+	}
 }
 
 static IIO_CONST_ATTR(illuminance_integration_time_available, max44009_int_time_str);
@@ -335,51 +315,12 @@ out_unlock:
 	return IRQ_HANDLED;
 }
 
-
-
-static int max44009_read_lux(struct i2c_client *client,
-			     int *lux)
-{
-	int ret;
-	struct i2c_msg xfer[4];
-	u8 luxhireg[1] = { MAX44009_REG_LUX_HI };
-	u8 luxloreg[1] = { MAX44009_REG_LUX_LO };
-	u8 lo = 0;
-	u8 hi = 0;
-	
-	xfer[0].addr = client->addr;
-	xfer[0].flags = 0;
-	xfer[0].len = 1
-	xfer[0].buf = luxhireg;
-
-	xfer[1].addr = client->addr;
-	xfer[1].flags = I2C_M_RD;
-	xfer[1].len = 1
-	xfer[1].buf = &hi;
-	
-	xfer[2].addr = client->addr;
-	xfer[2].flags = 0;
-	xfer[2].len = 1
-	xfer[2].buf = luxloreg;
-
-	xfer[3].addr = client->addr;
-	xfer[3].flags = I2C_M_RD;
-	xfer[3].len = 1
-	xfer[3].buf = &lo;
-
-	ret = i2c_transfer(&client->adapter, xfer, 4);
-	if (!ret)
-		*lux = MAX44009_LUX(luxbuf[0], luxbuf[1]);
-
-	return ret;
-}
-
 static int max44009_probe(struct i2c_client *client,
 			  const struct i2c_device_id *id)
 {
 	struct max44009_data *data;
 	struct iio_dev *indio_dev;
-	int ret, reg;
+	int ret;
 	int lux = 0;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
@@ -430,13 +371,12 @@ static int max44009_probe(struct i2c_client *client,
 		dev_err(&client->dev, "failed to read init status: %d\n", ret);
 		return ret;
 	}
-
+#endif
 	ret = iio_triggered_buffer_setup(indio_dev, NULL, max44009_trigger_handler, NULL);
 	if (ret < 0) {
 		dev_err(&client->dev, "iio triggered buffer setup failed\n");
 		return ret;
 	}
-#endif
 	return iio_device_register(indio_dev);
 }
 
