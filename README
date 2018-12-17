@@ -1,0 +1,4 @@
+Support for the MAX44009 ambient light sensor
+---------------------------------------------
+
+TODO: Implement IIO trigger and threshold interrupt, design module that exposes interrupt pin
