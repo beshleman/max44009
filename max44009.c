@@ -383,12 +383,8 @@ static int max44009_probe(struct i2c_client *client,
 static int max44009_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
-
 	iio_device_unregister(indio_dev);
-#if 0
 	iio_triggered_buffer_cleanup(indio_dev);
-#endif
-
 	return 0;
 }
 
