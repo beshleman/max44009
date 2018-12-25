@@ -1,3 +1,4 @@
+USERNAME := debian
 obj-m := max44009.o
 KERNEL_DIR ?= $(HOME)/git/kernels/arm/staging
 IP := 192.168.0.100
@@ -11,4 +12,4 @@ clean:
 		SUBDIRS=$(PWD) clean
 
 deploy:
-	scp *.ko ubuntu@$(IP):
+	scp *.ko $(USERNAME)@$(IP):
