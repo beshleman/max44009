@@ -1,6 +1,6 @@
 obj-m := max44009.o
-KERNEL_DIR ?= $(HOME)/git/kernels/staging
-IP :=
+KERNEL_DIR ?= $(HOME)/git/kernels/arm/staging
+IP := 192.168.0.100
 
 all:
 	make -C $(KERNEL_DIR) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
@@ -11,4 +11,4 @@ clean:
 		SUBDIRS=$(PWD) clean
 
 deploy:
-	scp *.ko root@$(IP):
+	scp *.ko ubuntu@$(IP):
