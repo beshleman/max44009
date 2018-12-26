@@ -34,7 +34,7 @@
 #define MAX44009_REG_LOWER_THR		0x6
 #define MAX44009_REG_THR_TIMER		0x7
 
-/* REG_CFG Bits */
+/* CFG register bits */
 #define MAX44009_CFG_CONT	        BIT(7)
 #define MAX44009_CFG_MANUAL             BIT(6)
 #define MAX44009_CFG_CDR                BIT(3)
@@ -45,9 +45,22 @@
 #define EXP(val) (((unsigned int) val) >> 4)
 #define MANTISSA(val) ((((unsigned int) val) & 0xf) << 4)
 
+#if 0
 #define MAX44009_LUX_EXP(hi) (1 << EXP(hi))
 #define MAX44009_LUX_MANT(hi, lo) (MANTISSA(hi) | (lo & 0x0f))
 #define MAX44009_LUX(hi, lo) (MAX44009_LUX_EXP(hi) * MAX44009_LUX_MANT(hi, lo))
+#else
+
+#define MAX44009_HI_BYTE(luxreg) ((unsigned int) (luxreg & 0xff0) >> 4)
+#define MAX44009_LO_BYTE(luxreg) ((unsigned int) (luxreg & 0x0f))
+
+#define MAX44009_LUX_EXP(luxreg) (1 << EXP(MAX44009_HI_BYTE(luxreg)))
+#define MAX44009_LUX_MANT(luxreg) (MANTISSA(MAX44009_HI_BYTE(luxreg)) | MAX44009_LO_BYTE(luxreg))
+
+#define MAX44009_LUX(luxreg) \
+	(MAX44009_LUX_EXP(luxreg) * \
+	 MAX44009_LUX_MANT(luxreg))
+#endif
 
 static const int max44009_int_time_ns_array[] = {
 	800000000,
@@ -81,9 +94,8 @@ struct max44009_data {
 static const struct iio_chan_spec max44009_channels[] = {
 	{
 		.type = IIO_LIGHT,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE) |
-					    BIT(IIO_CHAN_INFO_INT_TIME),
+		.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED) | BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_INT_TIME),
 		.scan_index = 0,
 		.scan_type = {
 			.sign		= 'u',
@@ -171,8 +183,7 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 		return IIO_VAL_INT;
 }
 
-static int max44009_read_lux(struct i2c_client *client,
-			     int *lux)
+static int max44009_read_lux_raw(struct i2c_client *client)
 {
 	int ret;
 	struct i2c_msg xfer[4];
@@ -202,10 +213,23 @@ static int max44009_read_lux(struct i2c_client *client,
 	xfer[3].buf = &lo;
 
 	ret = i2c_transfer(client->adapter, xfer, 4);
-	if (!ret)
-		*lux = MAX44009_LUX(hi, lo);
 
-	return ret;
+	if (ret != 4)
+		return -EIO;
+
+	return ((hi & 0xff) << 4) | (lo & 0xf);
+}
+
+static int max44009_read_lux(struct i2c_client *client,
+			     int *lux)
+{
+	int ret;
+
+	ret = max44009_read_lux_raw(client);
+	if (ret < 0)
+		return ret;
+	
+	return MAX44009_LUX(ret);
 }
 
 static int max44009_read_raw(struct iio_dev *indio_dev,
@@ -216,18 +240,57 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 	int ret;
 
 	switch (mask) {
-	case IIO_CHAN_INFO_RAW:
+	case IIO_CHAN_INFO_RAW: {
 		switch (chan->type) {
-		case IIO_LIGHT:
+		case IIO_LIGHT: {
+			*val = 0;
+			*val2 = 0;
+			mutex_lock(&data->lock);
+			ret = max44009_read_lux_raw(data->client);
+			mutex_unlock(&data->lock);
+			printk(KERN_ERR "IIO_CHAN_INFO_RAW, IIO_LIGHT\n");
+			printk(KERN_ERR "ret = 0x%02x\n", ret);
+
+			*val = ret;
+			printk(KERN_ERR "val2 = 0x%02x\n", *val2);
+
+			if (ret < 0)
+				return ret;
+
+			return IIO_VAL_INT;
+		}
+		default: {
+			return -EINVAL;
+		}
+		}
+
+		break;
+	}
+	case IIO_CHAN_INFO_PROCESSED: {
+		switch (chan->type) {
+		case IIO_LIGHT: {
+			*val = 0;
+			*val2 = 0;
 			mutex_lock(&data->lock);
 			ret = max44009_read_lux(data->client, val);
 			mutex_unlock(&data->lock);
-			if (ret)
+			*val = ret;
+			printk(KERN_ERR "IIO_CHAN_INFO_PROCESSED, IIO_LIGHT\n");
+			printk(KERN_ERR "ret = 0x%02x, val = 0x%02x\n", ret, *val);
+			printk(KERN_ERR "val2 = 0x%02x\n", *val2);
+
+			if (ret < 0)
 				return ret;
+
 			return IIO_VAL_INT;
-		default:
+		}
+		default: {
 			return -EINVAL;
 		}
+		}
+
+		break;
+	}
 
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
@@ -337,34 +400,16 @@ static int max44009_probe(struct i2c_client *client,
 	indio_dev->num_channels = ARRAY_SIZE(max44009_channels);
 
 	/* Read lux level */
+	pr_err("<%s> attemp read lux @ 0x%02x\n", __FILE__, data->client->addr);
 	mutex_lock(&data->lock);
 	ret = max44009_read_lux(client, &lux);
 	mutex_unlock(&data->lock);
 	if (ret < 0) {
 		dev_err(&client->dev, "failed to read lux: %d\n",
 			ret);
-		return ret;
 	}
 	dev_dbg(&client->dev, "lux: %d\n", lux);
-
 #if 0
-	/* Reset ALS scaling bits */
-	ret = regmap_write(data->regmap, MAX44009_REG_CFG_RX,
-			   MAX44009_REG_CFG_RX_DEFAULT);
-	if (ret < 0) {
-		dev_err(&client->dev, "failed to write default CFG_RX: %d\n",
-			ret);
-		return ret;
-	}
-
-	/* Reset CFG bits to ALS_PRX mode which allows easy reading of both values. */
-	reg = MAX44009_CFG_TRIM | MAX44009_CFG_MODE_ALS_PRX;
-	ret = regmap_write(data->regmap, MAX44009_REG_CFG_MAIN, reg);
-	if (ret < 0) {
-		dev_err(&client->dev, "failed to write init config: %d\n", ret);
-		return ret;
-	}
-
 	/* Read status at least once to clear any stale interrupt bits. */
 	ret = regmap_read(data->regmap, MAX44009_REG_STATUS, &reg);
 	if (ret < 0) {
@@ -404,6 +449,11 @@ static struct i2c_driver max44009_driver = {
 };
 module_i2c_driver(max44009_driver);
 
+static const struct of_device_id max44009_of_match[] = {
+	{ .compatible = "max,max44009" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, max44009_of_match);
+
 MODULE_AUTHOR("Robert Eshleman <bobbyeshleman@gmail.com>");
-MODULE_DESCRIPTION("MAX44009 Ambient Light Sensor");
 MODULE_LICENSE("GPL v2");
