@@ -377,8 +377,8 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 				      const struct iio_chan_spec *chan,
 				      enum iio_event_type type,
 				      enum iio_event_direction dir,
-				      enum iio_event_info info, int val,
-				      int val2)
+				      enum iio_event_info info,
+				      int val, int val2)
 {
 	switch (info) {
 	case IIO_EV_INFO_VALUE:
@@ -400,8 +400,8 @@ static int max44009_read_event_value(struct iio_dev *indio_dev,
 				     const struct iio_chan_spec *chan,
 				     enum iio_event_type type,
 				     enum iio_event_direction dir,
-				     enum iio_event_info info, int *val,
-				     int *val2)
+				     enum iio_event_info info,
+				     int *val, int *val2)
 {
 	int thresh, reg;
 	struct max44009_data *data = iio_priv(indio_dev);
