@@ -1,15 +1,16 @@
-USERNAME := debian
 obj-m := max44009.o
-KERNEL_DIR ?= $(HOME)/git/kernels/arm/staging
-IP := 192.168.0.100
+KERNEL_DIR ?=/home/bobby/Downloads/linux-kernel-labs/modules/nfsroot/root/beaglebone/linux
+CROSS_COMPILE := arm-linux-gnueabi-
+ARCH := arm
 
-all: max44009.c
-	make -C $(KERNEL_DIR) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+all: max44009.c tools
+	make -C $(KERNEL_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
 		SUBDIRS=$(PWD) modules
 
 clean:
-	make -C $(KERNEL_DIR) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+	make -C $(KERNEL_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
 		SUBDIRS=$(PWD) clean
 
-deploy: max44009.c all
-	scp *.ko $(USERNAME)@$(IP):
+
+tools: write_int_time.c
+	$(CROSS_COMPILE)gcc -o write_int_time $<
