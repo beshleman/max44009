@@ -172,8 +172,9 @@ static int max44009_read_int_time(struct max44009_data *data)
 {
 	int ret = max44009_read_reg(data, MAX44009_REG_CFG);
 
-	if (ret < 0)
+	if (ret < 0) {
 		return ret;
+	}
 
 	return max44009_int_time_ns_array[ret & MAX44009_INT_TIME_MASK];
 }
@@ -210,10 +211,11 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 				      struct iio_chan_spec const *chan,
 				      long mask)
 {
-	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT)
+	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT) {
 		return IIO_VAL_INT_PLUS_NANO;
-	else
+	} else {
 		return IIO_VAL_INT;
+	}
 }
 
 #define READ_LUX_XFER_LEN (4)
@@ -257,8 +259,9 @@ static int max44009_read_lux_raw(struct max44009_data *data)
 	mutex_lock(&data->lock);
 	ret = i2c_transfer(data->client->adapter, xfer, READ_LUX_XFER_LEN);
 	mutex_unlock(&data->lock);
-	if (ret != READ_LUX_XFER_LEN)
+	if (ret != READ_LUX_XFER_LEN) {
 		return -EIO;
+	}
 
 	reg = (((u16)hi) << 4) | (lo & 0xf);
 
@@ -277,8 +280,9 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 		switch (chan->type) {
 		case IIO_LIGHT: {
 			ret = max44009_read_lux_raw(data);
-			if (ret < 0)
+			if (ret < 0) {
 				return ret;
+			}
 			*val = ret;
 			*val2 = 0;
 			return IIO_VAL_INT;
@@ -291,8 +295,9 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 
 	case IIO_CHAN_INFO_INT_TIME: {
 		ret = max44009_read_int_time(data);
-		if (ret < 0)
+		if (ret < 0) {
 			return ret;
+		}
 
 		*val2 = ret;
 		*val = 0;
@@ -321,8 +326,9 @@ static int max44009_thresh_byte_from_int(int thresh)
 {
 	int mantissa, exp;
 
-	if (thresh < 0 || thresh > MAX44009_MAXIMUM_THRESHOLD)
+	if (thresh < 0 || thresh > MAX44009_MAXIMUM_THRESHOLD) {
 		return -EINVAL;
+	}
 
 	for (mantissa = thresh, exp = 0; mantissa > 0xff; exp++) {
 		mantissa >>= 1;
@@ -355,12 +361,14 @@ static int max44009_write_thresh(struct iio_dev *indio_dev,
 	int reg;
 
 	reg = max44009_get_thr_reg(dir);
-	if (reg < 0)
+	if (reg < 0) {
 		return reg;
+	}
 
 	thresh = max44009_thresh_byte_from_int(val);
-	if (thresh < 0)
+	if (thresh < 0) {
 		return thresh;
+	}
 
 	return max44009_write_reg(data, reg, thresh);
 }
@@ -372,8 +380,9 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 				      enum iio_event_info info,
 				      int val, int val2)
 {
-	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0)
+	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0) {
 		return -EINVAL;
+	}
 	
 	return max44009_write_thresh(indio_dev, dir, val);
 }
@@ -388,16 +397,19 @@ static int max44009_read_event_value(struct iio_dev *indio_dev,
 	int thresh, reg;
 	struct max44009_data *data = iio_priv(indio_dev);
 
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH) {
 		return -EINVAL;
+	}
 
 	reg = max44009_get_thr_reg(dir);
-	if (reg < 0)
+	if (reg < 0) {
 		return reg;
+	}
 
 	thresh = max44009_read_reg(data, reg);
-	if (thresh < 0)
+	if (thresh < 0) {
 		return thresh;
+	}
 
 	*val = MAX44009_THRESHOLD(thresh);
 
@@ -413,20 +425,23 @@ static int max44009_write_event_config(struct iio_dev *indio_dev,
 	struct max44009_data *data = iio_priv(indio_dev);
 	int ret;
 
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH) {
 		return -EINVAL;
+	}
 
 	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, state);
-	if (ret < 0)
+	if (ret < 0) {
 		return ret;
+	}
 
 	/*
 	 * Set device to trigger interrupt immediately upon exceeding
 	 * the threshold limit
 	 */
 	ret = max44009_write_reg(data, MAX44009_REG_THR_TIMER, 0);
-	if (ret < 0)
+	if (ret < 0) {
 		return ret;
+	}
 
 	return 0;
 }
@@ -439,12 +454,14 @@ static int max44009_read_event_config(struct iio_dev *indio_dev,
 	struct max44009_data *data = iio_priv(indio_dev);
 	int ret;
 
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH) {
 		return -EINVAL;
+	}
 
 	ret = max44009_read_reg(data, MAX44009_REG_ENABLE);
-	if (ret < 0)
+	if (ret < 0) {
 		return ret;
+	}
 
 	return ret;
 }
@@ -468,12 +485,14 @@ static int max44009_set_trigger_state(struct iio_trigger *trigger,
 	int ret;
 
 	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, enable);
-	if (ret < 0)
+	if (ret < 0) {
 		return ret;
+	}
 
 	ret = max44009_write_reg(data, MAX44009_REG_THR_TIMER, 0);
-	if (ret < 0)
+	if (ret < 0) {
 		return ret;
+	}
 
 	return ret;
 }
@@ -580,8 +599,9 @@ static int max44009_probe(struct i2c_client *client,
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev)
+	if (!indio_dev) {
 		return -ENOMEM;
+	}
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
@@ -636,10 +656,14 @@ static int max44009_probe(struct i2c_client *client,
 		}
 	}
 
-	return devm_iio_device_register(&client->dev, indio_dev);
+	ret = devm_iio_device_register(&client->dev, indio_dev);
+	if (ret < 0) {
+		goto err;
+	}
 
+	return 0;
 err:
-	mutex_unlock(&data->lock);
+	mutex_destroy(&data->lock);
 	return ret;
 }
 
