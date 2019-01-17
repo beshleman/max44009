@@ -55,13 +55,13 @@
 #define MAX44009_MAXIMUM_THRESHOLD 8355840
 
 #define MAX44009_HI_NIBBLE(reg) (((reg) >> 4) & 0xf)
-#define MAX44009_LO_NIBBLE(reg) ((reg)&0xf)
+#define MAX44009_LO_NIBBLE(reg) ((reg) & 0xf)
 
 #define MAX44009_EXP_MASK 0xf00
 #define MAX44009_EXP_RSHIFT 8
 #define MAX44009_LUX_EXP(reg)	                                              \
-	(1 << (((reg)&MAX44009_EXP_MASK) >> MAX44009_EXP_RSHIFT))
-#define MAX44009_LUX_MANT(reg) ((reg)&0xff)
+	(1 << (((reg) & MAX44009_EXP_MASK) >> MAX44009_EXP_RSHIFT))
+#define MAX44009_LUX_MANT(reg) ((reg) & 0xff)
 
 #define MAX44009_LUX(reg) (MAX44009_LUX_EXP(reg) * MAX44009_LUX_MANT(reg))
 
@@ -140,7 +140,8 @@ static int max44009_read_reg(struct max44009_data *data, char reg)
 	mutex_lock(&data->lock);
 	ret = i2c_smbus_read_byte_data(client, reg);
 	if (ret < 0) {
-		dev_err(&client->dev, "failed to read reg 0x%0x, err: %d\n", reg, ret);
+		dev_err(&client->dev,
+			"failed to read reg 0x%0x, err: %d\n", reg, ret);
 		goto err;
 	}
 
@@ -383,7 +384,7 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0) {
 		return -EINVAL;
 	}
-	
+
 	return max44009_write_thresh(indio_dev, dir, val);
 }
 
@@ -546,7 +547,8 @@ static irqreturn_t max44009_trigger_handler(int irq, void *p)
 	lower = MAX44009_THRESHOLD(lower);
 
 	/* If lux is NOT out-of-bounds then the interrupt was not triggered
-	 * by this device */
+	 * by this device
+	 */
 	if (lux < upper && lux > lower) {
 		goto err;
 	}
