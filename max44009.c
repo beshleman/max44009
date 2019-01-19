@@ -14,7 +14,6 @@
  * TODO: Support continuous mode and processed event value (IIO_EV_INFO_VALUE)
  *
  * Default I2C address: 0x4a
- *
  */
 
 #include <linux/bits.h>
@@ -23,9 +22,6 @@
 #include <linux/iio/events.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
-#include <linux/iio/trigger.h>
-#include <linux/iio/trigger_consumer.h>
-#include <linux/iio/triggered_buffer.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -34,7 +30,6 @@
 #include <linux/util_macros.h>
 
 #define MAX44009_DRV_NAME "max44009"
-#define MAX44009_IRQ_NAME "max44009_event"
 
 /* Registers in datasheet order */
 #define MAX44009_REG_STATUS 0x0
@@ -95,7 +90,6 @@ static const char max44009_scale_avail_str[] = "0.045";
 
 struct max44009_data {
 	struct i2c_client *client;
-	struct iio_trigger *trigger;
 	struct mutex lock;
 	int64_t timestamp;
 };
@@ -173,9 +167,8 @@ static int max44009_read_int_time(struct max44009_data *data)
 {
 	int ret = max44009_read_reg(data, MAX44009_REG_CFG);
 
-	if (ret < 0) {
+	if (ret < 0)
 		return ret;
-	}
 
 	return max44009_int_time_ns_array[ret & MAX44009_INT_TIME_MASK];
 }
@@ -212,11 +205,10 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 				      struct iio_chan_spec const *chan,
 				      long mask)
 {
-	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT) {
+	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT)
 		return IIO_VAL_INT_PLUS_NANO;
-	} else {
+	else
 		return IIO_VAL_INT;
-	}
 }
 
 #define READ_LUX_XFER_LEN (4)
@@ -260,9 +252,8 @@ static int max44009_read_lux_raw(struct max44009_data *data)
 	mutex_lock(&data->lock);
 	ret = i2c_transfer(data->client->adapter, xfer, READ_LUX_XFER_LEN);
 	mutex_unlock(&data->lock);
-	if (ret != READ_LUX_XFER_LEN) {
+	if (ret != READ_LUX_XFER_LEN)
 		return -EIO;
-	}
 
 	reg = (((u16)hi) << 4) | (lo & 0xf);
 
@@ -281,9 +272,9 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 		switch (chan->type) {
 		case IIO_LIGHT: {
 			ret = max44009_read_lux_raw(data);
-			if (ret < 0) {
+			if (ret < 0)
 				return ret;
-			}
+
 			*val = ret;
 			*val2 = 0;
 			return IIO_VAL_INT;
@@ -296,9 +287,8 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 
 	case IIO_CHAN_INFO_INT_TIME: {
 		ret = max44009_read_int_time(data);
-		if (ret < 0) {
+		if (ret < 0)
 			return ret;
-		}
 
 		*val2 = ret;
 		*val = 0;
@@ -327,13 +317,11 @@ static int max44009_thresh_byte_from_int(int thresh)
 {
 	int mantissa, exp;
 
-	if (thresh < 0 || thresh > MAX44009_MAXIMUM_THRESHOLD) {
+	if (thresh < 0 || thresh > MAX44009_MAXIMUM_THRESHOLD)
 		return -EINVAL;
-	}
 
-	for (mantissa = thresh, exp = 0; mantissa > 0xff; exp++) {
+	for (mantissa = thresh, exp = 0; mantissa > 0xff; exp++)
 		mantissa >>= 1;
-	}
 
 	mantissa >>= 4;
 	mantissa &= 0xf;
@@ -362,14 +350,12 @@ static int max44009_write_thresh(struct iio_dev *indio_dev,
 	int reg;
 
 	reg = max44009_get_thr_reg(dir);
-	if (reg < 0) {
+	if (reg < 0)
 		return reg;
-	}
 
 	thresh = max44009_thresh_byte_from_int(val);
-	if (thresh < 0) {
+	if (thresh < 0)
 		return thresh;
-	}
 
 	return max44009_write_reg(data, reg, thresh);
 }
@@ -381,9 +367,8 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 				      enum iio_event_info info,
 				      int val, int val2)
 {
-	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0) {
+	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0)
 		return -EINVAL;
-	}
 
 	return max44009_write_thresh(indio_dev, dir, val);
 }
@@ -398,19 +383,16 @@ static int max44009_read_event_value(struct iio_dev *indio_dev,
 	int thresh, reg;
 	struct max44009_data *data = iio_priv(indio_dev);
 
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH) {
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
 		return -EINVAL;
-	}
 
 	reg = max44009_get_thr_reg(dir);
-	if (reg < 0) {
+	if (reg < 0)
 		return reg;
-	}
 
 	thresh = max44009_read_reg(data, reg);
-	if (thresh < 0) {
+	if (thresh < 0)
 		return thresh;
-	}
 
 	*val = MAX44009_THRESHOLD(thresh);
 
@@ -426,23 +408,20 @@ static int max44009_write_event_config(struct iio_dev *indio_dev,
 	struct max44009_data *data = iio_priv(indio_dev);
 	int ret;
 
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH) {
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
 		return -EINVAL;
-	}
 
 	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, state);
-	if (ret < 0) {
+	if (ret < 0)
 		return ret;
-	}
 
 	/*
 	 * Set device to trigger interrupt immediately upon exceeding
 	 * the threshold limit
 	 */
 	ret = max44009_write_reg(data, MAX44009_REG_THR_TIMER, 0);
-	if (ret < 0) {
+	if (ret < 0)
 		return ret;
-	}
 
 	return 0;
 }
@@ -455,14 +434,12 @@ static int max44009_read_event_config(struct iio_dev *indio_dev,
 	struct max44009_data *data = iio_priv(indio_dev);
 	int ret;
 
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH) {
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
 		return -EINVAL;
-	}
 
 	ret = max44009_read_reg(data, MAX44009_REG_ENABLE);
-	if (ret < 0) {
+	if (ret < 0)
 		return ret;
-	}
 
 	return ret;
 }
@@ -478,31 +455,7 @@ static const struct iio_info max44009_info = {
 	.attrs = &max44009_attribute_group,
 };
 
-static int max44009_set_trigger_state(struct iio_trigger *trigger,
-				      bool enable)
-{
-	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trigger);
-	struct max44009_data *data = iio_priv(indio_dev);
-	int ret;
-
-	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, enable);
-	if (ret < 0) {
-		return ret;
-	}
-
-	ret = max44009_write_reg(data, MAX44009_REG_THR_TIMER, 0);
-	if (ret < 0) {
-		return ret;
-	}
-
-	return ret;
-}
-
-static const struct iio_trigger_ops max44009_trigger_ops = {
-	.set_trigger_state = max44009_set_trigger_state,
-};
-
-static irqreturn_t max44009_trigger_handler(int irq, void *p)
+static irqreturn_t max44009_thread_fn(int irq, void *p)
 {
 	struct iio_dev *indio_dev = p;
 	struct max44009_data *data = iio_priv(indio_dev);
@@ -514,57 +467,50 @@ static irqreturn_t max44009_trigger_handler(int irq, void *p)
 	u32 buf[3] = {0};
 
 	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
-	if (ret <= 0) {
+	if (ret <= 0)
 		goto err;
-	}
 
 	ret = max44009_read_reg(data, MAX44009_REG_ENABLE);
-	if (ret <= 0) {
+	if (ret <= 0)
 		goto err;
-	}
 
 	/* Clear interrupt by disabling interrupt (see datasheet) */
 	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, 0);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err;
-	}
 
 	lux = max44009_read_lux_raw(data);
-	if (lux < 0) {
+	if (lux < 0)
 		goto err;
-	}
 
 	upper = max44009_read_reg(data, MAX44009_REG_UPPER_THR);
-	if (upper < 0) {
+	if (upper < 0)
 		goto err;
-	}
+
 	upper = MAX44009_THRESHOLD(upper);
 
 	lower = max44009_read_reg(data, MAX44009_REG_LOWER_THR);
-	if (lower < 0) {
+	if (lower < 0)
 		goto err;
-	}
+
 	lower = MAX44009_THRESHOLD(lower);
 
 	/* If lux is NOT out-of-bounds then the interrupt was not triggered
 	 * by this device
 	 */
-	if (lux < upper && lux > lower) {
+	if (lux < upper && lux > lower)
 		goto err;
-	}
 
 	/* Get event for correct thresh direction */
-	if (lux >= upper) {
+	if (lux >= upper)
 		direction = IIO_EV_DIR_RISING;
-	} else if (lux <= lower) {
+	else if (lux <= lower)
 		direction = IIO_EV_DIR_FALLING;
-	} else {
+	else
 		goto err;
-	}
 
 	buf[0] = lux;
 	iio_push_to_buffers_with_timestamp(indio_dev, &buf, data->timestamp);
-	iio_trigger_notify_done(data->trigger);
 
 	iio_push_event(indio_dev,
 		       IIO_UNMOD_EVENT_CODE(IIO_LIGHT, 0,
@@ -572,9 +518,8 @@ static irqreturn_t max44009_trigger_handler(int irq, void *p)
 		       data->timestamp);
 
 	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, 1);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err;
-	}
 
 	return IRQ_HANDLED;
 
@@ -601,9 +546,8 @@ static int max44009_probe(struct i2c_client *client,
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev) {
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
@@ -617,51 +561,23 @@ static int max44009_probe(struct i2c_client *client,
 
 	/* Clear stale interrupt bit */
 	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err;
-	}
 
 	if (client->irq > 0) {
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
 						max44009_irq_handler,
-						max44009_trigger_handler,
+						max44009_thread_fn,
 						IRQF_TRIGGER_FALLING |
 						IRQF_ONESHOT,
-						MAX44009_IRQ_NAME, indio_dev);
-		if (ret < 0) {
+						"max44009_event", indio_dev);
+		if (ret < 0)
 			goto err;
-		}
-
-		ret = devm_iio_triggered_buffer_setup(&client->dev, indio_dev,
-						      max44009_irq_handler,
-						      max44009_trigger_handler,
-						      NULL);
-		if (ret < 0) {
-			goto err;
-		}
-
-		data->trigger = devm_iio_trigger_alloc(indio_dev->dev.parent,
-						       "%s-dev%d",
-						       indio_dev->name,
-						       indio_dev->id);
-		if (!data->trigger) {
-			ret = -ENOMEM;
-			goto err;
-		}
-		data->trigger->dev.parent = indio_dev->dev.parent;
-		data->trigger->ops = &max44009_trigger_ops;
-		iio_trigger_set_drvdata(data->trigger, indio_dev);
-
-		ret = devm_iio_trigger_register(&client->dev, data->trigger);
-		if (ret < 0) {
-			goto err;
-		}
 	}
 
 	ret = devm_iio_device_register(&client->dev, indio_dev);
-	if (ret < 0) {
+	if (ret < 0)
 		goto err;
-	}
 
 	return 0;
 err:
