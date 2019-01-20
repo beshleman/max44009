@@ -12,7 +12,7 @@ clean:
 		M=$(PWD) clean
 
 deploy:
-	scp max44009.ko debian@192.168.0.100:
+	scp max44009.ko debian@192.168.0.52:
 
 tools: write_int_time.c
 	$(CROSS_COMPILE)gcc -o write_int_time $<

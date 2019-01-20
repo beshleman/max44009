@@ -4,14 +4,9 @@
  *
  * Copyright (c) 2019 Robert Eshleman <bobbyeshleman@gmail.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- *
  * Datasheet: https://datasheets.maximintegrated.com/en/ds/MAX44009.pdf
  *
- * TODO: Support continuous mode and processed event value (IIO_EV_INFO_VALUE)
+ * TODO: Support continuous mode
  *
  * Default I2C address: 0x4a
  */
@@ -46,7 +41,7 @@
 
 #define MAX44009_MANUAL_MODE_MASK BIT(6)
 
-/* The maxmimum raw rising threshold for the max44009 */
+/* The maximum raw rising threshold for the max44009 */
 #define MAX44009_MAXIMUM_THRESHOLD 8355840
 
 #define MAX44009_HI_NIBBLE(reg) (((reg) >> 4) & 0xf)
@@ -85,13 +80,9 @@ static const char max44009_int_time_str[] =
 	"0.0125 "
 	"0.00625";
 
-static const u8 max44009_scale_avail_ulux_array[] = {45};
-static const char max44009_scale_avail_str[] = "0.045";
-
 struct max44009_data {
 	struct i2c_client *client;
 	struct mutex lock;
-	int64_t timestamp;
 };
 
 static const struct iio_event_spec max44009_event_spec[] = {
@@ -112,14 +103,15 @@ static const struct iio_event_spec max44009_event_spec[] = {
 static const struct iio_chan_spec max44009_channels[] = {
 	{
 		.type = IIO_LIGHT,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_INT_TIME),
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+				      BIT(IIO_CHAN_INFO_INT_TIME) |
+				      BIT(IIO_CHAN_INFO_SCALE),
 		.scan_index = 0,
 		.scan_type = {
-				.sign = 'u',
-				.realbits = 24,
-				.storagebits = 32,
-			},
+			.sign = 'u',
+			.realbits = 24,
+			.storagebits = 32,
+		},
 		.event_spec = max44009_event_spec,
 		.num_event_specs = ARRAY_SIZE(max44009_event_spec),
 	},
@@ -131,7 +123,6 @@ static int max44009_read_reg(struct max44009_data *data, char reg)
 	struct i2c_client *client = data->client;
 	int ret;
 
-	mutex_lock(&data->lock);
 	ret = i2c_smbus_read_byte_data(client, reg);
 	if (ret < 0) {
 		dev_err(&client->dev,
@@ -211,12 +202,12 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 		return IIO_VAL_INT;
 }
 
-#define READ_LUX_XFER_LEN (4)
+#define MAX44009_READ_LUX_XFER_LEN (4)
 
 static int max44009_read_lux_raw(struct max44009_data *data)
 {
 	int ret;
-	struct i2c_msg xfer[READ_LUX_XFER_LEN];
+	struct i2c_msg xfer[MAX44009_READ_LUX_XFER_LEN];
 	u8 luxhireg[1] = {MAX44009_REG_LUX_HI};
 	u8 luxloreg[1] = {MAX44009_REG_LUX_LO};
 	u8 lo = 0;
@@ -250,9 +241,9 @@ static int max44009_read_lux_raw(struct max44009_data *data)
 	 * reduces accuracy
 	 */
 	mutex_lock(&data->lock);
-	ret = i2c_transfer(data->client->adapter, xfer, READ_LUX_XFER_LEN);
+	ret = i2c_transfer(data->client->adapter, xfer, MAX44009_READ_LUX_XFER_LEN);
 	mutex_unlock(&data->lock);
-	if (ret != READ_LUX_XFER_LEN)
+	if (ret != MAX44009_READ_LUX_XFER_LEN)
 		return -EIO;
 
 	reg = (((u16)hi) << 4) | (lo & 0xf);
@@ -268,9 +259,9 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 	int ret;
 
 	switch (mask) {
-	case IIO_CHAN_INFO_RAW: {
+	case IIO_CHAN_INFO_RAW:
 		switch (chan->type) {
-		case IIO_LIGHT: {
+		case IIO_LIGHT:
 			ret = max44009_read_lux_raw(data);
 			if (ret < 0)
 				return ret;
@@ -278,35 +269,43 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 			*val = ret;
 			*val2 = 0;
 			return IIO_VAL_INT;
-		}
 		default:
 			return -EINVAL;
 		}
-		break;
-	}
+	case IIO_CHAN_INFO_INT_TIME:
+		switch (chan->type) {
+		case IIO_LIGHT:
+			ret = max44009_read_int_time(data);
+			if (ret < 0)
+				return ret;
 
-	case IIO_CHAN_INFO_INT_TIME: {
-		ret = max44009_read_int_time(data);
-		if (ret < 0)
-			return ret;
-
-		*val2 = ret;
-		*val = 0;
-		return IIO_VAL_INT_PLUS_NANO;
-	}
-
+			*val2 = ret;
+			*val = 0;
+			return IIO_VAL_INT_PLUS_NANO;
+		default:
+			return -EINVAL;
+		}
+	case IIO_CHAN_INFO_SCALE:
+		switch (chan->type) {
+		case IIO_LIGHT:
+			*val = 45;
+			*val2 = 1000;
+			return IIO_VAL_FRACTIONAL;
+			
+		default:
+			return -EINVAL;
+		}
 	default:
 		return -EINVAL;
 	}
 }
 
-static IIO_CONST_ATTR(illuminance_scale_available, max44009_scale_avail_str);
 static IIO_CONST_ATTR(illuminance_integration_time_available,
 		      max44009_int_time_str);
 
 static struct attribute *max44009_attributes[] = {
 	&iio_const_attr_illuminance_integration_time_available.dev_attr.attr,
-	&iio_const_attr_illuminance_scale_available.dev_attr.attr, NULL
+	NULL,
 };
 
 static const struct attribute_group max44009_attribute_group = {
@@ -342,24 +341,6 @@ static int max44009_get_thr_reg(enum iio_event_direction dir)
 	}
 }
 
-static int max44009_write_thresh(struct iio_dev *indio_dev,
-				 enum iio_event_direction dir, int val)
-{
-	struct max44009_data *data = iio_priv(indio_dev);
-	int thresh;
-	int reg;
-
-	reg = max44009_get_thr_reg(dir);
-	if (reg < 0)
-		return reg;
-
-	thresh = max44009_thresh_byte_from_int(val);
-	if (thresh < 0)
-		return thresh;
-
-	return max44009_write_reg(data, reg, thresh);
-}
-
 static int max44009_write_event_value(struct iio_dev *indio_dev,
 				      const struct iio_chan_spec *chan,
 				      enum iio_event_type type,
@@ -367,24 +348,27 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 				      enum iio_event_info info,
 				      int val, int val2)
 {
+	struct max44009_data *data = iio_priv(indio_dev);
+	int reg, thresh;
+
 	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0)
 		return -EINVAL;
 
-	return max44009_write_thresh(indio_dev, dir, val);
+	thresh = max44009_thresh_byte_from_int(val);
+	if (thresh < 0)
+		return thresh;
+
+	reg = max44009_get_thr_reg(dir);
+	if (reg < 0)
+		return reg;
+
+	return max44009_write_reg(data, reg, thresh);
 }
 
-static int max44009_read_event_value(struct iio_dev *indio_dev,
-				     const struct iio_chan_spec *chan,
-				     enum iio_event_type type,
-				     enum iio_event_direction dir,
-				     enum iio_event_info info,
-				     int *val, int *val2)
+static int max44009_read_thresh(struct iio_dev *indio_dev, enum iio_event_direction dir)
 {
-	int thresh, reg;
 	struct max44009_data *data = iio_priv(indio_dev);
-
-	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
-		return -EINVAL;
+	int thresh, reg;
 
 	reg = max44009_get_thr_reg(dir);
 	if (reg < 0)
@@ -394,7 +378,26 @@ static int max44009_read_event_value(struct iio_dev *indio_dev,
 	if (thresh < 0)
 		return thresh;
 
-	*val = MAX44009_THRESHOLD(thresh);
+	return MAX44009_THRESHOLD(thresh);
+}
+
+static int max44009_read_event_value(struct iio_dev *indio_dev,
+				     const struct iio_chan_spec *chan,
+				     enum iio_event_type type,
+				     enum iio_event_direction dir,
+				     enum iio_event_info info,
+				     int *val, int *val2)
+{
+	int ret;
+
+	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
+		return -EINVAL;
+
+	ret = max44009_read_thresh(indio_dev, dir);
+	if (ret < 0)
+		return ret;
+
+	*val = ret;
 
 	return IIO_VAL_INT;
 }
@@ -455,87 +458,22 @@ static const struct iio_info max44009_info = {
 	.attrs = &max44009_attribute_group,
 };
 
-static irqreturn_t max44009_thread_fn(int irq, void *p)
+static irqreturn_t max44009_threaded_irq_handler(int irq, void *p)
 {
 	struct iio_dev *indio_dev = p;
 	struct max44009_data *data = iio_priv(indio_dev);
-	int lux, upper, lower;
 	int ret;
-	enum iio_event_direction direction;
-
-	/* 32-bit for lux and 64-bit for timestamp */
-	u32 buf[3] = {0};
-
-	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
-	if (ret <= 0)
-		goto err;
-
-	ret = max44009_read_reg(data, MAX44009_REG_ENABLE);
-	if (ret <= 0)
-		goto err;
-
-	/* Clear interrupt by disabling interrupt (see datasheet) */
-	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, 0);
-	if (ret < 0)
-		goto err;
-
-	lux = max44009_read_lux_raw(data);
-	if (lux < 0)
-		goto err;
-
-	upper = max44009_read_reg(data, MAX44009_REG_UPPER_THR);
-	if (upper < 0)
-		goto err;
-
-	upper = MAX44009_THRESHOLD(upper);
-
-	lower = max44009_read_reg(data, MAX44009_REG_LOWER_THR);
-	if (lower < 0)
-		goto err;
-
-	lower = MAX44009_THRESHOLD(lower);
-
-	/* If lux is NOT out-of-bounds then the interrupt was not triggered
-	 * by this device
-	 */
-	if (lux < upper && lux > lower)
-		goto err;
-
-	/* Get event for correct thresh direction */
-	if (lux >= upper)
-		direction = IIO_EV_DIR_RISING;
-	else if (lux <= lower)
-		direction = IIO_EV_DIR_FALLING;
-	else
-		goto err;
-
-	buf[0] = lux;
-	iio_push_to_buffers_with_timestamp(indio_dev, &buf, data->timestamp);
 
 	iio_push_event(indio_dev,
 		       IIO_UNMOD_EVENT_CODE(IIO_LIGHT, 0,
-					    IIO_EV_TYPE_THRESH, direction),
-		       data->timestamp);
+					    IIO_EV_TYPE_THRESH, IIO_EV_DIR_EITHER),
+		       iio_get_time_ns(indio_dev));
 
-	ret = max44009_write_reg(data, MAX44009_REG_ENABLE, 1);
+	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
 	if (ret < 0)
-		goto err;
+		dev_err(&data->client->dev, "failed to clear interrupt\n");
 
 	return IRQ_HANDLED;
-
-err:
-	/* Re-enable interrupt */
-	max44009_write_reg(data, MAX44009_REG_ENABLE, 1);
-	return IRQ_NONE;
-}
-
-static irqreturn_t max44009_irq_handler(int irq, void *p)
-{
-	struct iio_dev *indio_dev = p;
-	struct max44009_data *data = iio_priv(indio_dev);
-
-	data->timestamp = iio_get_time_ns(indio_dev);
-	return IRQ_WAKE_THREAD;
 }
 
 static int max44009_probe(struct i2c_client *client,
@@ -559,30 +497,24 @@ static int max44009_probe(struct i2c_client *client,
 	indio_dev->num_channels = ARRAY_SIZE(max44009_channels);
 	mutex_init(&data->lock);
 
-	/* Clear stale interrupt bit */
+	/* Clear any stale interrupt bit */
 	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
 	if (ret < 0)
-		goto err;
+		return ret;
 
 	if (client->irq > 0) {
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
-						max44009_irq_handler,
-						max44009_thread_fn,
+						NULL,
+						max44009_threaded_irq_handler,
 						IRQF_TRIGGER_FALLING |
 						IRQF_ONESHOT,
-						"max44009_event", indio_dev);
+						"max44009_event",
+						indio_dev);
 		if (ret < 0)
-			goto err;
+			return ret;
 	}
 
-	ret = devm_iio_device_register(&client->dev, indio_dev);
-	if (ret < 0)
-		goto err;
-
-	return 0;
-err:
-	mutex_destroy(&data->lock);
-	return ret;
+	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
 static const struct i2c_device_id max44009_id[] = {
@@ -608,5 +540,4 @@ MODULE_DEVICE_TABLE(of, max44009_of_match);
 
 MODULE_AUTHOR("Robert Eshleman <bobbyeshleman@gmail.com>");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("1.0.0");
 MODULE_DESCRIPTION("MAX44009 ambient light sensor driver");
