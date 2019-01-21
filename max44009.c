@@ -6,7 +6,8 @@
  *
  * Datasheet: https://datasheets.maximintegrated.com/en/ds/MAX44009.pdf
  *
- * TODO: Support continuous mode
+ * TODO: Support continuous mode and re-configuring from manual mode to
+ * 	 automatic mode.
  *
  * Default I2C address: 0x4a
  */
@@ -36,28 +37,17 @@
 #define MAX44009_REG_LOWER_THR 0x6
 #define MAX44009_REG_THR_TIMER 0x7
 
-#define MAX44009_INT_TIME_MASK (BIT(2) | BIT(1) | BIT(0))
-#define MAX44009_INT_TIME_SHIFT (0)
+#define MAX44009_INT_TIME_MASK GENMASK(2, 0)
 
 #define MAX44009_MANUAL_MODE_MASK BIT(6)
 
 /* The maximum raw rising threshold for the max44009 */
 #define MAX44009_MAXIMUM_THRESHOLD 8355840
 
-#define MAX44009_HI_NIBBLE(reg) (((reg) >> 4) & 0xf)
-#define MAX44009_LO_NIBBLE(reg) ((reg) & 0xf)
-
-#define MAX44009_EXP_MASK 0xf00
-#define MAX44009_EXP_RSHIFT 8
-#define MAX44009_LUX_EXP(reg)	                                              \
-	(1 << (((reg) & MAX44009_EXP_MASK) >> MAX44009_EXP_RSHIFT))
-#define MAX44009_LUX_MANT(reg) ((reg) & 0xff)
-
-#define MAX44009_LUX(reg) (MAX44009_LUX_EXP(reg) * MAX44009_LUX_MANT(reg))
-
-#define MAX44009_THRESH_MANT(reg) ((MAX44009_LO_NIBBLE(reg) << 4) + 15)
-#define MAX44009_THRESHOLD(reg)                                                \
-	((1 << MAX44009_HI_NIBBLE(reg)) * MAX44009_THRESH_MANT(reg))
+#define MAX44009_THRESH_EXP_MASK (0xf << 4)
+#define MAX44009_THRESH_MANT_LSHIFT 4
+#define MAX44009_THRESH_MANT_MASK 0xf
+#define MAX44009_RISING_THR_MINIMUM 15
 
 static const u32 max44009_int_time_ns_array[] = {
 	800000000,
@@ -118,45 +108,23 @@ static const struct iio_chan_spec max44009_channels[] = {
 	IIO_CHAN_SOFT_TIMESTAMP(1),
 };
 
-static int max44009_read_reg(struct max44009_data *data, char reg)
-{
-	struct i2c_client *client = data->client;
-	int ret;
-
-	ret = i2c_smbus_read_byte_data(client, reg);
-	if (ret < 0) {
-		dev_err(&client->dev,
-			"failed to read reg 0x%0x, err: %d\n", reg, ret);
-		goto err;
-	}
-
-err:
-	mutex_unlock(&data->lock);
-	return ret;
-}
-
 static int max44009_write_reg(struct max44009_data *data, char reg, char buf)
 {
 	struct i2c_client *client = data->client;
 	int ret;
 
-	mutex_lock(&data->lock);
 	ret = i2c_smbus_write_byte_data(client, reg, buf);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&client->dev,
 			"failed to write reg 0x%0x, err: %d\n",
 			reg, ret);
-		goto err;
-	}
-
-err:
-	mutex_unlock(&data->lock);
 	return ret;
 }
 
 static int max44009_read_int_time(struct max44009_data *data)
 {
-	int ret = max44009_read_reg(data, MAX44009_REG_CFG);
+
+	int ret = i2c_smbus_read_byte_data(data->client, MAX44009_REG_CFG);
 
 	if (ret < 0)
 		return ret;
@@ -164,30 +132,43 @@ static int max44009_read_int_time(struct max44009_data *data)
 	return max44009_int_time_ns_array[ret & MAX44009_INT_TIME_MASK];
 }
 
+static int max44009_write_int_time(struct max44009_data *data, int val, int val2)
+{
+	struct i2c_client *client = data->client;
+	int ret, int_time, config;
+	s64 ns;
+
+	ns = val * NSEC_PER_SEC + val2;
+	int_time = find_closest_descending(
+			ns,
+			max44009_int_time_ns_array,
+			ARRAY_SIZE(max44009_int_time_ns_array));
+
+	ret = i2c_smbus_read_byte_data(client, MAX44009_REG_CFG);
+	if (ret < 0)
+		return ret;
+
+	config = ret;
+	config &= int_time | ~MAX44009_INT_TIME_MASK;
+
+	/* To set the integration time, the device must also be in manual mode. */
+	config |= MAX44009_MANUAL_MODE_MASK;
+
+	return i2c_smbus_write_byte_data(client, MAX44009_REG_CFG, config);
+}
+
 static int max44009_write_raw(struct iio_dev *indio_dev,
 			      struct iio_chan_spec const *chan, int val,
 			      int val2, long mask)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
-	int ret, int_time;
-	s64 ns;
+	int ret;
 
 	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT) {
-		ns = val * NSEC_PER_SEC + val2;
-		int_time = find_closest_descending(
-				ns,
-				max44009_int_time_ns_array,
-				ARRAY_SIZE(max44009_int_time_ns_array));
-
-		ret = max44009_read_reg(data, MAX44009_REG_CFG);
-		if (ret < 0)
-			return ret;
-
-		ret &= ~MAX44009_INT_TIME_MASK;
-		ret |= (int_time << MAX44009_INT_TIME_SHIFT);
-		ret |= MAX44009_MANUAL_MODE_MASK;
-
-		return max44009_write_reg(data, MAX44009_REG_CFG, ret);
+		mutex_lock(&data->lock);
+		ret = max44009_write_int_time(data, val, val2);
+		mutex_unlock(&data->lock);
+		return ret;
 	}
 	return -EINVAL;
 }
@@ -196,10 +177,30 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 				      struct iio_chan_spec const *chan,
 				      long mask)
 {
-	if (mask == IIO_CHAN_INFO_INT_TIME && chan->type == IIO_LIGHT)
-		return IIO_VAL_INT_PLUS_NANO;
-	else
-		return IIO_VAL_INT;
+	return IIO_VAL_INT_PLUS_NANO;
+}
+
+static int max44009_lux_raw(u8 hi, u8 lo)
+{
+	int mantissa;
+	int exponent;
+
+	/*
+	 * The mantissa consists of the low nibble of the Lux High Byte
+	 * and the low nibble of the Lux Low Byte.
+	 */
+	mantissa = (hi & 0xf) << 4;
+	mantissa |= lo & 0xf;
+
+	/* The exponent byte is just the upper nibble of the Lux High Byte */
+	exponent = (hi >> 4) & 0xf;
+
+	/* 
+	 * The exponent value is base 2 to the power of the raw exponent byte.
+	 */
+	exponent = 1 << exponent;
+
+	return exponent * mantissa;
 }
 
 #define MAX44009_READ_LUX_XFER_LEN (4)
@@ -207,32 +208,37 @@ static int max44009_write_raw_get_fmt(struct iio_dev *indio_dev,
 static int max44009_read_lux_raw(struct max44009_data *data)
 {
 	int ret;
-	struct i2c_msg xfer[MAX44009_READ_LUX_XFER_LEN];
-	u8 luxhireg[1] = {MAX44009_REG_LUX_HI};
-	u8 luxloreg[1] = {MAX44009_REG_LUX_LO};
+	u8 hireg = MAX44009_REG_LUX_HI;
+	u8 loreg = MAX44009_REG_LUX_HI;
 	u8 lo = 0;
 	u8 hi = 0;
-	u16 reg = 0;
 
-	xfer[0].addr = data->client->addr;
-	xfer[0].flags = 0;
-	xfer[0].len = 1;
-	xfer[0].buf = luxhireg;
-
-	xfer[1].addr = data->client->addr;
-	xfer[1].flags = I2C_M_RD;
-	xfer[1].len = 1;
-	xfer[1].buf = &hi;
-
-	xfer[2].addr = data->client->addr;
-	xfer[2].flags = 0;
-	xfer[2].len = 1;
-	xfer[2].buf = luxloreg;
-
-	xfer[3].addr = data->client->addr;
-	xfer[3].flags = I2C_M_RD;
-	xfer[3].len = 1;
-	xfer[3].buf = &lo;
+	struct i2c_msg msgs[] = {
+		{
+			.addr = data->client->addr,
+			.flags = 0,
+			.len = sizeof(hireg),
+			.buf = &hireg,
+		},
+		{
+			.addr = data->client->addr,
+			.flags = I2C_M_RD,
+			.len = sizeof(hi),
+			.buf = &hi,
+		},
+		{
+			.addr = data->client->addr,
+			.flags = 0,
+			.len = sizeof(loreg),
+			.buf = &loreg,
+		},
+		{
+			.addr = data->client->addr,
+			.flags = I2C_M_RD,
+			.len = sizeof(lo),
+			.buf = &lo,
+		}
+	};
 
 	/*
 	 * Use i2c_transfer instead of smbus read because i2c_transfer
@@ -240,15 +246,11 @@ static int max44009_read_lux_raw(struct max44009_data *data)
 	 * Using a stop bit causes disjoint upper/lower byte reads and
 	 * reduces accuracy
 	 */
-	mutex_lock(&data->lock);
-	ret = i2c_transfer(data->client->adapter, xfer, MAX44009_READ_LUX_XFER_LEN);
-	mutex_unlock(&data->lock);
+	ret = i2c_transfer(data->client->adapter, msgs, MAX44009_READ_LUX_XFER_LEN);
 	if (ret != MAX44009_READ_LUX_XFER_LEN)
 		return -EIO;
 
-	reg = (((u16)hi) << 4) | (lo & 0xf);
-
-	return MAX44009_LUX(reg);
+	return max44009_lux_raw(hi, lo);
 }
 
 static int max44009_read_raw(struct iio_dev *indio_dev,
@@ -368,17 +370,31 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 static int max44009_read_thresh(struct iio_dev *indio_dev, enum iio_event_direction dir)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
-	int thresh, reg;
+	int threshbyte, reg;
+	int mantissa, exponent;
 
 	reg = max44009_get_thr_reg(dir);
 	if (reg < 0)
 		return reg;
 
-	thresh = max44009_read_reg(data, reg);
-	if (thresh < 0)
-		return thresh;
+	threshbyte = i2c_smbus_read_byte_data(data->client, reg);
+	if (threshbyte < 0)
+		return threshbyte;
 
-	return MAX44009_THRESHOLD(thresh);
+	mantissa = threshbyte & MAX44009_THRESH_MANT_MASK;
+	mantissa <<= MAX44009_THRESH_MANT_LSHIFT;
+
+	/* 
+	 * To get the upper thresh, always adds the minimum upper thresh value
+	 * to the shifted byte value, see the datasheet.
+	 */
+	if (dir == IIO_EV_DIR_RISING)
+		mantissa += MAX44009_RISING_THR_MINIMUM;
+
+	/* Exponent is base 2 to the power of the thresh exponent byte value */
+	exponent = 1 << (threshbyte & MAX44009_THRESH_EXP_MASK);
+
+	return exponent * mantissa;
 }
 
 static int max44009_read_event_value(struct iio_dev *indio_dev,
@@ -420,13 +436,9 @@ static int max44009_write_event_config(struct iio_dev *indio_dev,
 
 	/*
 	 * Set device to trigger interrupt immediately upon exceeding
-	 * the threshold limit
+	 * the threshold limit.
 	 */
-	ret = max44009_write_reg(data, MAX44009_REG_THR_TIMER, 0);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	return max44009_write_reg(data, MAX44009_REG_THR_TIMER, 0);
 }
 
 static int max44009_read_event_config(struct iio_dev *indio_dev,
@@ -435,16 +447,11 @@ static int max44009_read_event_config(struct iio_dev *indio_dev,
 				      enum iio_event_direction dir)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
-	int ret;
 
 	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
 		return -EINVAL;
 
-	ret = max44009_read_reg(data, MAX44009_REG_ENABLE);
-	if (ret < 0)
-		return ret;
-
-	return ret;
+	return i2c_smbus_read_byte_data(data->client, MAX44009_REG_ENABLE);
 }
 
 static const struct iio_info max44009_info = {
@@ -469,7 +476,7 @@ static irqreturn_t max44009_threaded_irq_handler(int irq, void *p)
 					    IIO_EV_TYPE_THRESH, IIO_EV_DIR_EITHER),
 		       iio_get_time_ns(indio_dev));
 
-	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
+	ret = i2c_smbus_read_byte_data(data->client, MAX44009_REG_STATUS);
 	if (ret < 0)
 		dev_err(&data->client->dev, "failed to clear interrupt\n");
 
@@ -498,7 +505,7 @@ static int max44009_probe(struct i2c_client *client,
 	mutex_init(&data->lock);
 
 	/* Clear any stale interrupt bit */
-	ret = max44009_read_reg(data, MAX44009_REG_STATUS);
+	ret = i2c_smbus_read_byte_data(client, MAX44009_REG_CFG);
 	if (ret < 0)
 		return ret;
 
