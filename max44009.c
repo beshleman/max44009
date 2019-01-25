@@ -6,7 +6,7 @@
  *
  * Datasheet: https://datasheets.maximintegrated.com/en/ds/MAX44009.pdf
  *
- * TODO: Support continuous mode and re-configuring from manual mode to
+ * TODO: Support continuous mode and configuring from manual mode to
  * 	 automatic mode.
  *
  * Default I2C address: 0x4a
@@ -45,9 +45,16 @@
 #define MAX44009_MAXIMUM_THRESHOLD 8355840
 
 #define MAX44009_THRESH_EXP_MASK (0xf << 4)
+#define MAX44009_THRESH_EXP_RSHIFT 4
 #define MAX44009_THRESH_MANT_LSHIFT 4
 #define MAX44009_THRESH_MANT_MASK 0xf
 #define MAX44009_RISING_THR_MINIMUM 15
+
+/* The max44009 always scales raw readings by 0.045 and is non-configurable */
+#define MAX44009_SCALE_NUMERATOR 45
+#define MAX44009_SCALE_DENOMINATOR 1000
+
+#define MAX44009_FRACT_MULT 1000000
 
 static const u32 max44009_int_time_ns_array[] = {
 	800000000,
@@ -93,9 +100,8 @@ static const struct iio_event_spec max44009_event_spec[] = {
 static const struct iio_chan_spec max44009_channels[] = {
 	{
 		.type = IIO_LIGHT,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
-				      BIT(IIO_CHAN_INFO_INT_TIME) |
-				      BIT(IIO_CHAN_INFO_SCALE),
+		.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED) |
+				      BIT(IIO_CHAN_INFO_INT_TIME),
 		.scan_index = 0,
 		.scan_type = {
 			.sign = 'u',
@@ -105,7 +111,6 @@ static const struct iio_chan_spec max44009_channels[] = {
 		.event_spec = max44009_event_spec,
 		.num_event_specs = ARRAY_SIZE(max44009_event_spec),
 	},
-	IIO_CHAN_SOFT_TIMESTAMP(1),
 };
 
 static int max44009_write_reg(struct max44009_data *data, char reg, char buf)
@@ -244,7 +249,7 @@ static int max44009_read_lux_raw(struct max44009_data *data)
 	 * Use i2c_transfer instead of smbus read because i2c_transfer
 	 * does NOT use a stop bit between address write and data read.
 	 * Using a stop bit causes disjoint upper/lower byte reads and
-	 * reduces accuracy
+	 * reduces accuracy.
 	 */
 	ret = i2c_transfer(data->client->adapter, msgs, MAX44009_READ_LUX_XFER_LEN);
 	if (ret != MAX44009_READ_LUX_XFER_LEN)
@@ -258,19 +263,21 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 			     int *val2, long mask)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
+	int lux_raw;
 	int ret;
 
 	switch (mask) {
-	case IIO_CHAN_INFO_RAW:
+	case IIO_CHAN_INFO_PROCESSED:
 		switch (chan->type) {
 		case IIO_LIGHT:
 			ret = max44009_read_lux_raw(data);
 			if (ret < 0)
 				return ret;
+			lux_raw = ret;
 
-			*val = ret;
-			*val2 = 0;
-			return IIO_VAL_INT;
+			*val = lux_raw * MAX44009_SCALE_NUMERATOR;
+			*val2 = MAX44009_SCALE_DENOMINATOR;
+			return IIO_VAL_FRACTIONAL;
 		default:
 			return -EINVAL;
 		}
@@ -284,16 +291,6 @@ static int max44009_read_raw(struct iio_dev *indio_dev,
 			*val2 = ret;
 			*val = 0;
 			return IIO_VAL_INT_PLUS_NANO;
-		default:
-			return -EINVAL;
-		}
-	case IIO_CHAN_INFO_SCALE:
-		switch (chan->type) {
-		case IIO_LIGHT:
-			*val = 45;
-			*val2 = 1000;
-			return IIO_VAL_FRACTIONAL;
-			
 		default:
 			return -EINVAL;
 		}
@@ -314,14 +311,24 @@ static const struct attribute_group max44009_attribute_group = {
 	.attrs = max44009_attributes,
 };
 
-static int max44009_thresh_byte_from_int(int thresh)
+static int max44009_threshold_byte_from_fraction(int integral, int fractional)
 {
 	int mantissa, exp;
 
-	if (thresh < 0 || thresh > MAX44009_MAXIMUM_THRESHOLD)
+	if ((integral <= 0 && fractional <= 0) ||
+	     integral > MAX44009_MAXIMUM_THRESHOLD ||
+	     (integral == MAX44009_MAXIMUM_THRESHOLD && fractional != 0))
 		return -EINVAL;
 
-	for (mantissa = thresh, exp = 0; mantissa > 0xff; exp++)
+	/* Reverse scaling of fixed-point integral */
+	mantissa = integral * MAX44009_SCALE_DENOMINATOR;
+	mantissa /= MAX44009_SCALE_NUMERATOR;
+
+	/* Reverse scaling of fixed-point fractional */
+	mantissa += fractional / MAX44009_FRACT_MULT *
+		    (MAX44009_SCALE_DENOMINATOR / MAX44009_SCALE_NUMERATOR);
+
+	for (exp = 0; mantissa > 0xff; exp++)
 		mantissa >>= 1;
 
 	mantissa >>= 4;
@@ -351,48 +358,48 @@ static int max44009_write_event_value(struct iio_dev *indio_dev,
 				      int val, int val2)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
-	int reg, thresh;
+	int reg, threshold;
 
-	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT || val2 != 0)
+	if (info != IIO_EV_INFO_VALUE || chan->type != IIO_LIGHT)
 		return -EINVAL;
 
-	thresh = max44009_thresh_byte_from_int(val);
-	if (thresh < 0)
-		return thresh;
+	threshold = max44009_threshold_byte_from_fraction(val, val2);
+	if (threshold < 0)
+		return threshold;
 
 	reg = max44009_get_thr_reg(dir);
 	if (reg < 0)
 		return reg;
 
-	return max44009_write_reg(data, reg, thresh);
+	return max44009_write_reg(data, reg, threshold);
 }
 
-static int max44009_read_thresh(struct iio_dev *indio_dev, enum iio_event_direction dir)
+static int max44009_read_threshold(struct iio_dev *indio_dev, enum iio_event_direction dir)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
-	int threshbyte, reg;
+	int byte, reg;
 	int mantissa, exponent;
 
 	reg = max44009_get_thr_reg(dir);
 	if (reg < 0)
 		return reg;
 
-	threshbyte = i2c_smbus_read_byte_data(data->client, reg);
-	if (threshbyte < 0)
-		return threshbyte;
+	byte = i2c_smbus_read_byte_data(data->client, reg);
+	if (byte < 0)
+		return byte;
 
-	mantissa = threshbyte & MAX44009_THRESH_MANT_MASK;
+	mantissa = byte & MAX44009_THRESH_MANT_MASK;
 	mantissa <<= MAX44009_THRESH_MANT_LSHIFT;
 
 	/* 
-	 * To get the upper thresh, always adds the minimum upper thresh value
+	 * To get the upper threshold, always adds the minimum upper threshold value
 	 * to the shifted byte value, see the datasheet.
 	 */
 	if (dir == IIO_EV_DIR_RISING)
 		mantissa += MAX44009_RISING_THR_MINIMUM;
 
-	/* Exponent is base 2 to the power of the thresh exponent byte value */
-	exponent = 1 << (threshbyte & MAX44009_THRESH_EXP_MASK);
+	/* Exponent is base 2 to the power of the threshold exponent byte value */
+	exponent = 1 << ((byte & MAX44009_THRESH_EXP_MASK) >> MAX44009_THRESH_EXP_RSHIFT);
 
 	return exponent * mantissa;
 }
@@ -405,17 +412,20 @@ static int max44009_read_event_value(struct iio_dev *indio_dev,
 				     int *val, int *val2)
 {
 	int ret;
+	int threshold;
 
 	if (chan->type != IIO_LIGHT || type != IIO_EV_TYPE_THRESH)
 		return -EINVAL;
 
-	ret = max44009_read_thresh(indio_dev, dir);
+	ret = max44009_read_threshold(indio_dev, dir);
 	if (ret < 0)
 		return ret;
+	threshold = ret;
 
-	*val = ret;
+	*val = threshold * MAX44009_SCALE_NUMERATOR;
+	*val2 = MAX44009_SCALE_DENOMINATOR;
 
-	return IIO_VAL_INT;
+	return IIO_VAL_FRACTIONAL;
 }
 
 static int max44009_write_event_config(struct iio_dev *indio_dev,
